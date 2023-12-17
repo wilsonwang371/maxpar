@@ -10,129 +10,20 @@ import (
 
 var (
 	DefaultShardAmount               = 64
+	DefaultMaxEntries  int64         = 50000
 	DefaultExpiration  time.Duration = 0
 )
 
 type Cache struct {
-	Lock              sync.RWMutex
-	CanRenew          bool
+	Lock sync.RWMutex
+
+	CanRenew   bool
+	MaxEntries int64
+
 	DefaultExpiration time.Duration
 	ShardsAmount      int
 	Shards            []*CacheShard
 	StopC             chan struct{}
-}
-
-type CacheShard struct {
-	DefaultShardExpiration time.Duration
-	Lock                   sync.RWMutex
-	Items                  map[string]*CacheItem
-}
-
-// NewCacheShard
-func NewCacheShard(expiration time.Duration) *CacheShard {
-	return &CacheShard{
-		DefaultShardExpiration: expiration,
-		Items:                  make(map[string]*CacheItem),
-	}
-}
-
-func (cs *CacheShard) Set(k string, x interface{}, d time.Duration) {
-	cs.Lock.Lock()
-	defer cs.Lock.Unlock()
-	if d == DefaultExpiration {
-		d = cs.DefaultShardExpiration
-	}
-	cs.Items[k] = &CacheItem{
-		Object:     x,
-		Expiration: time.Now().Add(d).UnixNano(),
-	}
-}
-
-// SetDefault
-func (cs *CacheShard) SetDefault(k string, x interface{}) {
-	cs.Set(k, x, DefaultExpiration)
-}
-
-func (cs *CacheShard) Get(k string, renew bool) (interface{}, bool) {
-	cs.Lock.RLock()
-	defer cs.Lock.RUnlock()
-	item, found := cs.Items[k]
-	if !found {
-		return nil, false
-	}
-	if item.Expiration > 0 {
-		if time.Now().UnixNano() > item.Expiration {
-			return nil, false
-		}
-	}
-	if renew {
-		item.Expiration = time.Now().Add(DefaultExpiration).UnixNano()
-	}
-	return item.Object, true
-}
-
-func (cs *CacheShard) Add(k string, x interface{}, d time.Duration) error {
-	if d == DefaultExpiration {
-		d = cs.DefaultShardExpiration
-	}
-	cs.Lock.Lock()
-	defer cs.Lock.Unlock()
-	if _, found := cs.Items[k]; found {
-		return fmt.Errorf("Item %s already exists", k)
-	}
-	cs.Items[k] = &CacheItem{
-		Object:     x,
-		Expiration: time.Now().Add(d).UnixNano(),
-	}
-	return nil
-}
-
-// replace
-func (cs *CacheShard) Replace(k string, x interface{}, d time.Duration) error {
-	if d == DefaultExpiration {
-		d = cs.DefaultShardExpiration
-	}
-	cs.Lock.Lock()
-	defer cs.Lock.Unlock()
-	if _, found := cs.Items[k]; !found {
-		return fmt.Errorf("Item %s doesn't exist", k)
-	}
-	cs.Items[k] = &CacheItem{
-		Object:     x,
-		Expiration: time.Now().Add(d).UnixNano(),
-	}
-	return nil
-}
-
-// Delete
-func (cs *CacheShard) Delete(k string) {
-	cs.Lock.Lock()
-	defer cs.Lock.Unlock()
-	delete(cs.Items, k)
-}
-
-// Flush
-func (cs *CacheShard) Flush() {
-	cs.Lock.Lock()
-	defer cs.Lock.Unlock()
-	cs.Items = make(map[string]*CacheItem)
-}
-
-// DeleteExpired
-func (cs *CacheShard) DeleteExpired() {
-	now := time.Now().UnixNano()
-	cs.Lock.Lock()
-	defer cs.Lock.Unlock()
-	for k, v := range cs.Items {
-		if v.Expiration > 0 && now > v.Expiration {
-			delete(cs.Items, k)
-		}
-	}
-}
-
-type CacheItem struct {
-	Object     interface{}
-	Expiration int64
 }
 
 type CacheConfig struct {
@@ -140,6 +31,7 @@ type CacheConfig struct {
 	DefaultExpiration time.Duration
 	CleanupInterval   time.Duration
 	ShardsAmount      int
+	MaxEntries        int64
 }
 
 func (c *Cache) runJanitor() {
@@ -162,6 +54,7 @@ func NewWithConfig(config *CacheConfig) *Cache {
 	shardsAmount := config.ShardsAmount
 	res := &Cache{
 		CanRenew:          config.CanRenew,
+		MaxEntries:        config.MaxEntries,
 		DefaultExpiration: config.DefaultExpiration,
 		ShardsAmount:      shardsAmount,
 		Shards:            make([]*CacheShard, shardsAmount),
@@ -177,6 +70,7 @@ func NewWithConfig(config *CacheConfig) *Cache {
 func New(defaultExpiration, cleanupInterval time.Duration) *Cache {
 	cfg := &CacheConfig{
 		CanRenew:          true,
+		MaxEntries:        DefaultMaxEntries,
 		DefaultExpiration: defaultExpiration,
 		CleanupInterval:   cleanupInterval,
 		ShardsAmount:      DefaultShardAmount,
@@ -252,4 +146,134 @@ func (c *Cache) Delete(k string) {
 
 	shard := c.Shards[shardID]
 	shard.Delete(k)
+}
+
+// Count
+func (c *Cache) Count() int64 {
+	var res int64
+	for _, shard := range c.Shards {
+		res += shard.Count
+	}
+	return res
+}
+
+type CacheShard struct {
+	DefaultShardExpiration time.Duration
+	Lock                   sync.RWMutex
+	Items                  map[string]*CacheItem
+	Count                  int64
+}
+
+// NewCacheShard
+func NewCacheShard(expiration time.Duration) *CacheShard {
+	return &CacheShard{
+		DefaultShardExpiration: expiration,
+		Items:                  make(map[string]*CacheItem),
+	}
+}
+
+func (cs *CacheShard) Set(k string, x interface{}, d time.Duration) {
+	cs.Lock.Lock()
+	defer cs.Lock.Unlock()
+	if d == DefaultExpiration {
+		d = cs.DefaultShardExpiration
+	}
+	if _, found := cs.Items[k]; !found {
+		cs.Count++
+	}
+	cs.Items[k] = &CacheItem{
+		Object:     x,
+		Expiration: time.Now().Add(d).UnixNano(),
+	}
+}
+
+// SetDefault
+func (cs *CacheShard) SetDefault(k string, x interface{}) {
+	cs.Set(k, x, DefaultExpiration)
+}
+
+func (cs *CacheShard) Get(k string, renew bool) (interface{}, bool) {
+	cs.Lock.RLock()
+	defer cs.Lock.RUnlock()
+	item, found := cs.Items[k]
+	if !found {
+		return nil, false
+	}
+	if item.Expiration > 0 {
+		if time.Now().UnixNano() > item.Expiration {
+			return nil, false
+		}
+	}
+	if renew {
+		item.Expiration = time.Now().Add(DefaultExpiration).UnixNano()
+	}
+	return item.Object, true
+}
+
+func (cs *CacheShard) Add(k string, x interface{}, d time.Duration) error {
+	if d == DefaultExpiration {
+		d = cs.DefaultShardExpiration
+	}
+	cs.Lock.Lock()
+	defer cs.Lock.Unlock()
+	if _, found := cs.Items[k]; found {
+		return fmt.Errorf("Item %s already exists", k)
+	}
+	cs.Count++
+	cs.Items[k] = &CacheItem{
+		Object:     x,
+		Expiration: time.Now().Add(d).UnixNano(),
+	}
+	return nil
+}
+
+// replace
+func (cs *CacheShard) Replace(k string, x interface{}, d time.Duration) error {
+	if d == DefaultExpiration {
+		d = cs.DefaultShardExpiration
+	}
+	cs.Lock.Lock()
+	defer cs.Lock.Unlock()
+	if _, found := cs.Items[k]; !found {
+		return fmt.Errorf("Item %s doesn't exist", k)
+	}
+	cs.Items[k] = &CacheItem{
+		Object:     x,
+		Expiration: time.Now().Add(d).UnixNano(),
+	}
+	return nil
+}
+
+// Delete
+func (cs *CacheShard) Delete(k string) {
+	cs.Lock.Lock()
+	defer cs.Lock.Unlock()
+	delete(cs.Items, k)
+	cs.Count--
+}
+
+// Flush
+func (cs *CacheShard) Flush() {
+	cs.Lock.Lock()
+	defer cs.Lock.Unlock()
+	cs.Items = make(map[string]*CacheItem)
+	cs.Count = 0
+}
+
+// DeleteExpired
+func (cs *CacheShard) DeleteExpired() {
+	now := time.Now().UnixNano()
+	cs.Lock.Lock()
+	defer cs.Lock.Unlock()
+	for k, v := range cs.Items {
+		if v.Expiration > 0 && now > v.Expiration {
+			delete(cs.Items, k)
+			cs.Count--
+		}
+	}
+}
+
+type CacheItem struct {
+	Object     interface{}
+	Expiration int64
 }
