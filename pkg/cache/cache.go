@@ -9,27 +9,24 @@ import (
 )
 
 var (
-	DefaultShardAmount               = 64
-	DefaultMaxEntries  int64         = 50000
-	DefaultExpiration  time.Duration = 0
+	defaultShardPartitions               = 64 // default shard amount
+	NoSpecifiedExpiration  time.Duration = 0  // no specified expiration
 )
 
 type Cache struct {
-	Lock sync.RWMutex
-
+	Lock     sync.RWMutex
 	CanRenew bool
 
 	DefaultExpiration time.Duration
-	ShardsAmount      int
 	Shards            []*CacheShard
 	StopC             chan struct{}
 }
 
 type CacheConfig struct {
-	CanRenew          bool
-	DefaultExpiration time.Duration
-	CleanupInterval   time.Duration
-	ShardsAmount      int
+	CanRenew             bool
+	DefaultExpiration    time.Duration
+	CleanupInterval      time.Duration
+	NumOfShardPartitions int
 }
 
 func (c *Cache) runJanitor() {
@@ -49,11 +46,10 @@ func (c *Cache) runJanitor() {
 }
 
 func NewWithConfig(config *CacheConfig) *Cache {
-	shardsAmount := config.ShardsAmount
+	shardsAmount := config.NumOfShardPartitions
 	res := &Cache{
 		CanRenew:          config.CanRenew,
 		DefaultExpiration: config.DefaultExpiration,
-		ShardsAmount:      shardsAmount,
 		Shards:            make([]*CacheShard, shardsAmount),
 		StopC:             make(chan struct{}),
 	}
@@ -66,10 +62,10 @@ func NewWithConfig(config *CacheConfig) *Cache {
 
 func New(defaultExpiration, cleanupInterval time.Duration) *Cache {
 	cfg := &CacheConfig{
-		CanRenew:          true,
-		DefaultExpiration: defaultExpiration,
-		CleanupInterval:   cleanupInterval,
-		ShardsAmount:      DefaultShardAmount,
+		CanRenew:             true,
+		DefaultExpiration:    defaultExpiration,
+		CleanupInterval:      cleanupInterval,
+		NumOfShardPartitions: defaultShardPartitions,
 	}
 	return NewWithConfig(cfg)
 }
@@ -91,7 +87,7 @@ func (c *Cache) getShardID(key string) int {
 	if _, err := hash.Write([]byte(key)); err != nil {
 		panic(err)
 	}
-	return int(hash.Sum32() % uint32(c.ShardsAmount))
+	return int(hash.Sum32() % uint32(len(c.Shards)))
 }
 
 func (c *Cache) Get(k string) (interface{}, bool) {
@@ -176,7 +172,7 @@ func NewCacheShard(expiration time.Duration) *CacheShard {
 func (cs *CacheShard) Set(k string, x interface{}, d time.Duration) {
 	cs.Lock.Lock()
 	defer cs.Lock.Unlock()
-	if d == DefaultExpiration {
+	if d == NoSpecifiedExpiration {
 		d = cs.DefaultShardExpiration
 	}
 	if _, found := cs.Items[k]; !found {
@@ -190,7 +186,7 @@ func (cs *CacheShard) Set(k string, x interface{}, d time.Duration) {
 
 // SetDefault
 func (cs *CacheShard) SetDefault(k string, x interface{}) {
-	cs.Set(k, x, DefaultExpiration)
+	cs.Set(k, x, NoSpecifiedExpiration)
 }
 
 func (cs *CacheShard) Get(k string, renew bool) (interface{}, bool) {
@@ -206,13 +202,13 @@ func (cs *CacheShard) Get(k string, renew bool) (interface{}, bool) {
 		}
 	}
 	if renew {
-		item.Expiration = time.Now().Add(DefaultExpiration).UnixNano()
+		item.Expiration = time.Now().Add(NoSpecifiedExpiration).UnixNano()
 	}
 	return item.Object, true
 }
 
 func (cs *CacheShard) Add(k string, x interface{}, d time.Duration) error {
-	if d == DefaultExpiration {
+	if d == NoSpecifiedExpiration {
 		d = cs.DefaultShardExpiration
 	}
 	cs.Lock.Lock()
@@ -230,7 +226,7 @@ func (cs *CacheShard) Add(k string, x interface{}, d time.Duration) error {
 
 // replace
 func (cs *CacheShard) Replace(k string, x interface{}, d time.Duration) error {
-	if d == DefaultExpiration {
+	if d == NoSpecifiedExpiration {
 		d = cs.DefaultShardExpiration
 	}
 	cs.Lock.Lock()
