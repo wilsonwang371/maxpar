@@ -17,8 +17,7 @@ var (
 type Cache struct {
 	Lock sync.RWMutex
 
-	CanRenew   bool
-	MaxEntries int64
+	CanRenew bool
 
 	DefaultExpiration time.Duration
 	ShardsAmount      int
@@ -31,7 +30,6 @@ type CacheConfig struct {
 	DefaultExpiration time.Duration
 	CleanupInterval   time.Duration
 	ShardsAmount      int
-	MaxEntries        int64
 }
 
 func (c *Cache) runJanitor() {
@@ -54,7 +52,6 @@ func NewWithConfig(config *CacheConfig) *Cache {
 	shardsAmount := config.ShardsAmount
 	res := &Cache{
 		CanRenew:          config.CanRenew,
-		MaxEntries:        config.MaxEntries,
 		DefaultExpiration: config.DefaultExpiration,
 		ShardsAmount:      shardsAmount,
 		Shards:            make([]*CacheShard, shardsAmount),
@@ -70,7 +67,6 @@ func NewWithConfig(config *CacheConfig) *Cache {
 func New(defaultExpiration, cleanupInterval time.Duration) *Cache {
 	cfg := &CacheConfig{
 		CanRenew:          true,
-		MaxEntries:        DefaultMaxEntries,
 		DefaultExpiration: defaultExpiration,
 		CleanupInterval:   cleanupInterval,
 		ShardsAmount:      DefaultShardAmount,
@@ -162,6 +158,11 @@ type CacheShard struct {
 	Lock                   sync.RWMutex
 	Items                  map[string]*CacheItem
 	Count                  int64
+}
+
+type CacheItem struct {
+	Object     interface{}
+	Expiration int64
 }
 
 // NewCacheShard
@@ -271,9 +272,4 @@ func (cs *CacheShard) DeleteExpired() {
 			cs.Count--
 		}
 	}
-}
-
-type CacheItem struct {
-	Object     interface{}
-	Expiration int64
 }
