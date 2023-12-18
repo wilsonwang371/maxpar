@@ -2,10 +2,9 @@ package cache
 
 import (
 	"fmt"
+	"hash/fnv"
 	"sync"
 	"time"
-
-	"hash/fnv"
 )
 
 var (
